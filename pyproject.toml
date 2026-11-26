@@ -1,0 +1,35 @@
+[project]
+name = "groupthinq"
+version = "0.1.0"
+description = "A minimal, cost-aware software agency harness for Claude Code"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = []  # the harness itself is stdlib-only
+
+[dependency-groups]
+dev = [
+  "pytest==8.4.2",
+  "ruff==0.14.4",
+]
+# pyright is used from the system install (brew/npm); the PyPI wrapper downloads it at runtime.
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+# Hooks run on whatever python3 is on PATH; macOS ships 3.9.
+per-file-target-version = { "harness/**/*.py" = "py39", "install.py" = "py39" }
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pyright]
+include = ["harness/.claude/hooks", "tests", "install.py"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

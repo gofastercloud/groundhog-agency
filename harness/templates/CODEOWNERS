@@ -1,0 +1,6 @@
+# groupthinQ: the harness, CI and shared instructions need the maintainer's review.
+/.claude/ {owner}
+/.github/ {owner}
+/.mcp.json {owner}
+/CLAUDE.md {owner}
+/STATUS.md {owner}

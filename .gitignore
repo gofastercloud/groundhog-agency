@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.agency/
+.DS_Store
+**/.cc-writes/
+.claude/settings.json
+Running an agent agency on Claude research brief and plan.md
+
