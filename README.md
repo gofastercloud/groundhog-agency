@@ -22,8 +22,10 @@ All runtime and dev dependencies (`python3`, `uv`, `ruff`, `pyright`, `gh`, `tmu
 ## Install into a target repo
 
 ```nu
-agency-install /path/to/your/repo --owner @you --dry-run
-agency-install /path/to/your/repo --owner @you
+agency-install /path/to/your/repo --owner @you --create-labels --dry-run
+agency-install /path/to/your/repo --owner @you --create-labels
+# Add --human-review for human-gated repos (also creates needs-human-review):
+agency-install /path/to/your/repo --owner @you --create-labels --human-review
 # Or restrict to specific AI vendors:
 agency-install /path/to/your/repo --owner @you --vendors claude,antigravity,codex
 ```

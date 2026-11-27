@@ -17,6 +17,7 @@ import argparse
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -28,6 +29,19 @@ MARKER = "<!-- groundhog-agency:start -->"
 LEGACY_MARKER = "<!-- groupthinQ:start -->"
 OWNER_RE = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:/[A-Za-z0-9._-]+)?")
 ALL_VENDORS = ("claude", "antigravity", "codex")
+
+AGENCY_LABELS: tuple[tuple[str, str, str], ...] = (
+    ("agent-authored", "0E8A16", "Authored by an autonomous agent"),
+    ("ready-for-agent", "5BD4F5", "Implementer may pick this up"),
+    ("in-progress", "FACC15", "Claimed by an implementer"),
+    ("needs-human", "FB923C", "Waiting on the maintainer"),
+    ("spec", "8B5CF6", "Specification issue"),
+)
+HUMAN_REVIEW_LABEL: tuple[str, str, str] = (
+    "needs-human-review",
+    "D93F0B",
+    "Requires human review before merge",
+)
 
 # Shared files always installed regardless of vendor.
 SHARED_FILES: list[tuple[str, str]] = [
@@ -230,6 +244,25 @@ Next steps (run these yourself; the installer makes no network calls):
 Then start Claude Code, Antigravity, or Codex in the repo and run: /spec <your idea>"""
 
 
+def create_labels(target: Path, *, dry: bool = False, human_review: bool = False) -> list[str]:
+    """Create the standard agency labels on GitHub via agent-gh (or gh fallback)."""
+    labels = [*AGENCY_LABELS, HUMAN_REVIEW_LABEL] if human_review else list(AGENCY_LABELS)
+    if dry:
+        return [name for name, _, _ in labels]
+    gh_bin = shutil.which("agent-gh") or shutil.which("gh")
+    if gh_bin is None:
+        raise RuntimeError("neither agent-gh nor gh was found on PATH")
+    created: list[str] = []
+    for name, color, desc in labels:
+        cmd = [gh_bin, "label", "create", name, "--color", color, "--description", desc, "--force"]
+        proc = subprocess.run(cmd, cwd=target, capture_output=True, text=True, timeout=30, check=False)
+        if proc.returncode != 0:
+            err = (proc.stderr.strip() or proc.stdout.strip() or "failed").splitlines()[-1]
+            raise RuntimeError(f"{gh_bin} label create {name}: {err}")
+        created.append(name)
+    return created
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=(__doc__ or "").strip().splitlines()[0])
     p.add_argument("target", type=Path)
@@ -241,10 +274,21 @@ def main(argv: list[str] | None = None) -> int:
         default="all",
         help="all, or comma-separated subset of claude,antigravity,codex (default: all)",
     )
+    p.add_argument(
+        "--create-labels",
+        action="store_true",
+        help="create standard GitHub issue/PR labels via agent-gh (or gh)",
+    )
+    p.add_argument(
+        "--human-review",
+        action="store_true",
+        help="with --create-labels: also create the needs-human-review label",
+    )
     a = p.parse_args(argv)
     vendors = parse_vendors(a.vendors)
+    target = a.target.resolve()
     try:
-        res = install(a.target.resolve(), a.force, a.dry_run, a.owner, vendors)
+        res = install(target, a.force, a.dry_run, a.owner, vendors)
     except UnsafePath as exc:
         print(f"refusing to install: {exc}", file=sys.stderr)
         return 1
@@ -255,6 +299,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"skipped: {f}")
     for n in res.notes:
         print(f"NOTE: {n}")
+    if a.create_labels:
+        try:
+            labels = create_labels(target, dry=a.dry_run, human_review=a.human_review)
+        except RuntimeError as exc:
+            print(f"label setup failed: {exc}", file=sys.stderr)
+            return 1
+        lbl_prefix = "would create label" if a.dry_run else "created label"
+        for name in labels:
+            print(f"{lbl_prefix}: {name}")
     print(NEXT_STEPS.format(ruleset=HARNESS / "templates" / "ruleset.json"))
     return 2 if res.unmerged else 0
 
