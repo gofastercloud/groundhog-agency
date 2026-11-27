@@ -380,3 +380,27 @@ def test_install_dry_run_writes_nothing(tmp_path: Path) -> None:
 def test_install_rejects_non_repo(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         installer.install(tmp_path)
+
+
+def test_create_labels_dry_run_and_human_review(tmp_path: Path) -> None:
+    base = installer.create_labels(tmp_path, dry=True)
+    assert set(base) == {"agent-authored", "ready-for-agent", "in-progress", "needs-human", "spec"}
+    with_hr = installer.create_labels(tmp_path, dry=True, human_review=True)
+    assert "needs-human-review" in with_hr
+
+
+def test_create_labels_prefers_agent_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_which(name: str) -> str | None:
+        return "/usr/local/bin/agent-gh" if name == "agent-gh" else "/usr/bin/gh"
+
+    def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(installer.shutil, "which", fake_which)
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    created = installer.create_labels(tmp_path)
+    assert len(created) == 5
+    assert all(c[0] == "/usr/local/bin/agent-gh" and "--force" in c for c in calls)
