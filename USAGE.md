@@ -29,7 +29,7 @@ Enable `agent_git_enabled: true` and `agency_enabled: true` in Groundhog's `cust
 agency-install /path/to/your/repo --ship
 ```
 
-With Groundhog installed, `agency-install` automatically uses `agent-git`/`agent-gh` (1-hour single-repo GitHub App tokens + dedicated signing-only SSH key), detects `autonomous` vs `human-review` repo policies, and `implementer`/`reviewer` default to offline `agent-box` containers.
+With Groundhog installed, `agency-install` automatically uses `agent-git`/`agent-gh` (1-hour single-repo GitHub App tokens + dedicated signing-only SSH key), detects `autonomous` vs `human-review` repo policies, backs `~/.agency-kb` in `custom/agency-kb/` for cross-Mac sync, and `implementer`/`reviewer` default to offline `agent-box` containers.
 
 ---
 
