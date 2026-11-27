@@ -1196,6 +1196,108 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+VERDICT_FIELDS = ["recorded_at", "ticket", "attempt", "result", "reason"]
+
+
+def append_verdict(project: Path, *, ticket: str, attempt: int, result: str, reason: str = "") -> Path | None:
+    """Append one reviewer verdict row to `.agency/verdicts.csv` safely."""
+    d = agency_dir(project)
+    if d is None:
+        return None
+    verdicts = d / "verdicts.csv"
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(verdicts, flags, 0o600)
+    row = {
+        "recorded_at": datetime.now().isoformat(timespec="seconds"),
+        "ticket": csv_safe(ticket.lstrip("#")),
+        "attempt": attempt,
+        "result": result.upper(),
+        "reason": csv_safe(reason.replace("\n", " ").strip()[:240]),
+    }
+    with os.fdopen(fd, "a", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=VERDICT_FIELDS)
+        if os.fstat(fd).st_size == 0:
+            w.writeheader()
+        w.writerow(row)
+    return verdicts
+
+
+def read_verdicts(project: Path) -> list[dict[str, str]]:
+    p = project / ".agency" / "verdicts.csv"
+    if not p.is_file() or p.is_symlink():
+        return []
+    with p.open(newline="", encoding="utf-8", errors="replace") as fh:
+        return [r for r in csv.DictReader(fh) if r.get("ticket") and r.get("ticket") != "ticket"]
+
+
+def compute_metrics(project: Path) -> dict[str, object]:
+    """Compute first-pass rate, retry recovery, escalation rate, and cost per ticket."""
+    verdicts = read_verdicts(project)
+    by_ticket: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in verdicts:
+        by_ticket[row["ticket"]].append(row)
+    total = len(by_ticket)
+    first_pass = 0
+    retry_pass = 0
+    escalated = 0
+    for rows in by_ticket.values():
+        ordered = sorted(rows, key=lambda r: int(_num(r.get("attempt") or 1)))
+        if ordered[0].get("result") == "PASS":
+            first_pass += 1
+        elif any(r.get("result") == "PASS" for r in ordered[1:]):
+            retry_pass += 1
+        else:
+            escalated += 1
+    ledger_rows = read_ledger(project / ".agency" / "ledger.csv")
+    ticket_usd: dict[str, float] = defaultdict(float)
+    for r in ledger_rows:
+        t = str(r.get("ticket") or "").strip()
+        if t:
+            ticket_usd[t] += _num(r.get("usd"))
+    passed_tickets = first_pass + retry_pass
+    avg_usd = (sum(ticket_usd.values()) / len(ticket_usd)) if ticket_usd else None
+    return {
+        "tickets_reviewed": total,
+        "first_pass": first_pass,
+        "retry_pass": retry_pass,
+        "escalated": escalated,
+        "first_pass_rate": round(first_pass / total, 3) if total else None,
+        "passed_tickets": passed_tickets,
+        "avg_usd_per_ticket": round(avg_usd, 4) if avg_usd is not None else None,
+    }
+
+
+def cmd_verdict(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    dst = append_verdict(
+        project, ticket=args.ticket, attempt=args.attempt, result=args.result, reason=args.reason or ""
+    )
+    if dst is None:
+        print("groundhog-agency verdict: .agency is a symlink or outside the project", file=sys.stderr)
+        return 1
+    print(f"recorded: #{args.ticket.lstrip('#')} attempt {args.attempt} -> {args.result.upper()}")
+    return 0
+
+
+def cmd_metrics(args: argparse.Namespace) -> int:
+    m = compute_metrics(Path(args.project).resolve())
+    if args.as_json:
+        print(json.dumps(m, indent=2))
+        return 0
+    total = int(m["tickets_reviewed"])  # type: ignore[arg-type]
+    if total == 0:
+        print("No reviewer verdicts recorded yet (.agency/verdicts.csv).")
+        return 0
+    rate = float(m["first_pass_rate"] or 0.0)  # type: ignore[arg-type]
+    print(f"Tickets reviewed:   {total}")
+    print(f"First-pass PASS:    {m['first_pass']} ({rate:.0%})")
+    print(f"Passed on retry:    {m['retry_pass']}")
+    print(f"Escalated (human):  {m['escalated']}")
+    if m["avg_usd_per_ticket"] is not None:
+        print(f"Avg USD / ticket:   ${float(m['avg_usd_per_ticket']):.2f} (API list prices)")  # type: ignore[arg-type]
+    return 0
+
+
 def _pretool_failsafe(exc: BaseException) -> int:
     """pretool must fail closed: a crashing hook would otherwise let the tool call through."""
     reason = f"groupthinQ: the pretool hook failed ({type(exc).__name__}: {exc}); fix it before continuing"
@@ -1246,6 +1348,17 @@ def _main(argv: list[str]) -> int:
     rp.add_argument("--all", action="store_true", help="every project under ~/.claude/projects")
     rp.add_argument("--ledger", help="report from a ledger CSV instead of transcripts")
     rp.set_defaults(fn=cmd_report)
+    vd = sub.add_parser("verdict", help="record a reviewer PASS/FAIL verdict in .agency/verdicts.csv")
+    vd.add_argument("--ticket", required=True)
+    vd.add_argument("--attempt", type=int, default=1)
+    vd.add_argument("--result", choices=["PASS", "FAIL", "pass", "fail"], required=True)
+    vd.add_argument("--reason", default="")
+    vd.add_argument("--project", default=os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    vd.set_defaults(fn=cmd_verdict)
+    mt = sub.add_parser("metrics", help="print factory quality metrics (first-pass rate, cost/ticket)")
+    mt.add_argument("--project", default=os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    mt.add_argument("--json", action="store_true", dest="as_json")
+    mt.set_defaults(fn=cmd_metrics)
     args = p.parse_args(argv)
     return int(args.fn(args))
 
