@@ -165,6 +165,13 @@ def test_no_personal_names_in_harness() -> None:
             assert "Dave" not in f.read_text(), f
 
 
+def test_no_trailing_whitespace_in_harness() -> None:
+    for f in HARNESS.rglob("*"):
+        if f.is_file() and f.suffix in {".md", ".json", ".py"}:
+            for lineno, line in enumerate(f.read_text().splitlines(), 1):
+                assert not line.endswith((" ", "\t")), f"{f}:{lineno} has trailing whitespace"
+
+
 # ------------------------------------------------------------------ brief hook
 
 
@@ -485,9 +492,7 @@ def test_ship_skips_when_settings_unmerged(
     assert "skipping --ship" in capsys.readouterr().err
 
 
-def test_ship_install_pr_surfaces_full_hook_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ship_install_pr_surfaces_full_hook_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = make_repo(tmp_path)
 
     def fake_which(name: str) -> str | None:
