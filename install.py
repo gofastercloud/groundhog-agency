@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Install the groundhog-agency harness into a git repository.
 
-    python3 install.py /path/to/repo [--owner @you] [--vendors all] [--force] [--dry-run]
+    python3 install.py /path/to/repo [--owner @you] [--offline] [--ship] [--force] [--dry-run]
 
 Copies vendor-agnostic skills, roles, and templates, plus optional Claude Code
-hooks/settings. Existing files are never overwritten without --force. An
-existing .claude/settings.json is never touched, even with --force: the harness
-settings are written next to it and the installer exits 2, because until you
-merge them the permission rules, sandbox and subagent guard are off. Refuses to
-write through symlinks or outside the target. Runs no network or gh commands.
+hooks/settings. When the target has a GitHub `origin` remote (and --offline is
+not set), automatically detects the owner and Groundhog agent-git repo policy,
+verifies GitHub App access, creates the standard labels, and reconciles the
+default-branch ruleset (PR required, signed commits, no force-push/deletion).
+Existing files are never overwritten without --force. An existing
+.claude/settings.json is never touched, even with --force: the harness settings
+are written next to it and the installer exits 2. Refuses symlinks/hardlinks.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -29,6 +32,11 @@ MARKER = "<!-- groundhog-agency:start -->"
 LEGACY_MARKER = "<!-- groupthinQ:start -->"
 OWNER_RE = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:/[A-Za-z0-9._-]+)?")
 ALL_VENDORS = ("claude", "antigravity", "codex")
+_GITHUB_REMOTE_PATTERNS = (
+    re.compile(r"^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$"),
+    re.compile(r"^https?://(?:[^@]+@)?github\.com/([^/]+/[^/]+?)(?:\.git)?/?$"),
+    re.compile(r"^ssh://git@github\.com/([^/]+/[^/]+?)(?:\.git)?/?$"),
+)
 
 AGENCY_LABELS: tuple[tuple[str, str, str], ...] = (
     ("agent-authored", "0E8A16", "Authored by an autonomous agent"),
@@ -152,6 +160,219 @@ def parse_vendors(raw: str | None) -> tuple[str, ...]:
     return chosen
 
 
+def parse_github_url(url: str) -> str | None:
+    cleaned = url.strip()
+    for pat in _GITHUB_REMOTE_PATTERNS:
+        m = pat.match(cleaned)
+        if m:
+            return m.group(1)
+    return None
+
+
+def detect_github_repo(target: Path) -> str | None:
+    """Return `owner/repo` from `origin` remote, or None if absent/non-GitHub."""
+    proc = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=target,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    return parse_github_url(proc.stdout)
+
+
+def load_agent_git_config() -> dict[str, object]:
+    env_path = os.environ.get("GROUNDHOG_AGENT_GIT_CONFIG")
+    cfg_path = (
+        Path(env_path).expanduser()
+        if env_path
+        else (Path.home() / ".config" / "groundhog" / "agent-git.json")
+    )
+    if not cfg_path.is_file():
+        return {}
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def detect_repo_policy(slug: str | None, cfg: dict[str, object], human_review: bool = False) -> str:
+    if human_review:
+        return "human-review"
+    if not slug:
+        return "autonomous"
+    raw = cfg.get("repo_policies")
+    if isinstance(raw, dict):
+        pol = {str(k).lower(): str(v) for k, v in raw.items()}.get(slug.lower())
+        if pol == "human-review":
+            return "human-review"
+    return "autonomous"
+
+
+def ruleset_payload(policy: str) -> dict[str, object]:
+    is_hr = policy == "human-review"
+    return {
+        "name": "main-human-review" if is_hr else "main-autonomous",
+        "target": "branch",
+        "enforcement": "active",
+        "bypass_actors": [
+            {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"},
+        ],
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "rules": [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {"type": "required_signatures"},
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": 1 if is_hr else 0,
+                    "dismiss_stale_reviews_on_push": True,
+                    "require_code_owner_review": is_hr,
+                    "require_last_push_approval": False,
+                    "required_review_thread_resolution": False,
+                },
+            },
+        ],
+    }
+
+
+def check_agent_app_access(target: Path, slug: str, cfg: dict[str, object]) -> tuple[bool, str]:
+    agent_gh = shutil.which("agent-gh")
+    if not agent_gh:
+        return False, "agent-gh not found on PATH (enable agent_git_enabled in Groundhog)"
+    proc = subprocess.run(
+        [agent_gh, "repo", "view", slug, "--json", "nameWithOwner"],
+        cwd=target,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    if proc.returncode == 0:
+        return True, f"agent-gh verified access to {slug}"
+    inst_id = str(cfg.get("installation_id") or "").strip()
+    url = f"https://github.com/settings/installations/{inst_id}" if inst_id else "GitHub App settings"
+    return False, f"agent-gh cannot access {slug} yet — add it at {url}"
+
+
+def create_labels(target: Path, *, dry: bool = False, human_review: bool = False) -> list[str]:
+    """Create the standard agency labels on GitHub via agent-gh (or gh fallback)."""
+    labels = [*AGENCY_LABELS, HUMAN_REVIEW_LABEL] if human_review else list(AGENCY_LABELS)
+    if dry:
+        return [name for name, _, _ in labels]
+    gh_bin = shutil.which("agent-gh") or shutil.which("gh")
+    if gh_bin is None:
+        raise RuntimeError("neither agent-gh nor gh was found on PATH")
+    created: list[str] = []
+    for name, color, desc in labels:
+        cmd = [gh_bin, "label", "create", name, "--color", color, "--description", desc, "--force"]
+        proc = subprocess.run(cmd, cwd=target, capture_output=True, text=True, timeout=30, check=False)
+        if proc.returncode != 0:
+            err = (proc.stderr.strip() or proc.stdout.strip() or "failed").splitlines()[-1]
+            raise RuntimeError(f"{gh_bin} label create {name}: {err}")
+        created.append(name)
+    return created
+
+
+def ensure_ruleset(slug: str, policy: str, *, dry: bool = False) -> str:
+    """Create or update the default-branch ruleset via human `gh` (admin scope)."""
+    payload = ruleset_payload(policy)
+    name = str(payload["name"])
+    if dry:
+        return f"would ensure ruleset {name} on {slug} ({policy})"
+    gh_bin = shutil.which("gh")
+    if gh_bin is None:
+        raise RuntimeError("gh was not found on PATH (needed for branch rulesets)")
+    existing_proc = subprocess.run(
+        [gh_bin, "api", f"repos/{slug}/rulesets"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    if existing_proc.returncode != 0:
+        err = (existing_proc.stderr.strip() or existing_proc.stdout.strip() or "failed").splitlines()[-1]
+        raise RuntimeError(f"gh api repos/{slug}/rulesets: {err}")
+    existing = json.loads(existing_proc.stdout or "[]")
+    match_id: int | None = None
+    for item in existing if isinstance(existing, list) else []:
+        if isinstance(item, dict) and item.get("name") in {name, "main-autonomous", "main-human-review"}:
+            rid = item.get("id")
+            if isinstance(rid, int):
+                match_id = rid
+                break
+    method = "PUT" if match_id is not None else "POST"
+    endpoint = f"repos/{slug}/rulesets/{match_id}" if match_id is not None else f"repos/{slug}/rulesets"
+    proc = subprocess.run(
+        [gh_bin, "api", "-X", method, endpoint, "--input", "-"],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr.strip() or proc.stdout.strip() or "failed").splitlines()[-1]
+        raise RuntimeError(f"gh api -X {method} {endpoint}: {err}")
+    resp = json.loads(proc.stdout or "{}")
+    rid = resp.get("id", match_id or "?")
+    verb = "updated" if match_id is not None else "created"
+    return f"{verb} ruleset {name} (#{rid}) on {slug}"
+
+
+def ship_install_pr(target: Path, policy: str, *, dry: bool = False) -> str:
+    """Commit, push, open PR (and squash-merge on autonomous repos) via agent-git/agent-gh."""
+    branch = "agent/setup/groundhog-agency"
+    if dry:
+        action = "open draft PR" if policy == "human-review" else "open and squash-merge PR"
+        return f"would commit on {branch} and {action}"
+    agent_git = shutil.which("agent-git")
+    agent_gh = shutil.which("agent-gh")
+    if not agent_git or not agent_gh:
+        raise RuntimeError("--ship requires agent-git and agent-gh on PATH")
+    env = os.environ | {"AGENT_NAME": "Groundhog Agency Installer"}
+
+    def _step(cmd: list[str]) -> str:
+        proc = subprocess.run(cmd, cwd=target, env=env, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            err = (proc.stderr.strip() or proc.stdout.strip() or "failed").splitlines()[-1]
+            raise RuntimeError(f"{' '.join(cmd[:3])}: {err}")
+        return proc.stdout.strip()
+
+    _step([agent_git, "switch", "-C", branch])
+    _step([agent_git, "add", "-A"])
+    status = _step([agent_git, "status", "--porcelain"])
+    if not status:
+        return "nothing new to commit"
+    _step([agent_git, "commit", "-m", "chore: install groundhog-agency harness"])
+    _step([agent_git, "push", "-u", "origin", branch])
+    pr_cmd = [
+        agent_gh,
+        "pr",
+        "create",
+        "--label",
+        "agent-authored",
+        "--title",
+        "chore: install groundhog-agency harness",
+        "--body",
+        "Installs the vendor-agnostic groundhog-agency harness (.agents/, .claude/, AGENTS.md, CODEOWNERS).",
+    ]
+    if policy == "human-review":
+        pr_cmd += ["--draft", "--label", "needs-human-review"]
+    pr_url = _step(pr_cmd)
+    if policy == "human-review":
+        return f"opened draft PR for human review: {pr_url}"
+    _step([agent_gh, "pr", "merge", "--squash", "--delete-branch"])
+    _step([agent_git, "switch", "main"])
+    _step([agent_git, "pull", "--ff-only", "--prune"])
+    return f"merged harness PR: {pr_url}"
+
+
 def install(
     target: Path,
     force: bool = False,
@@ -244,51 +465,36 @@ Next steps (run these yourself; the installer makes no network calls):
 Then start Claude Code, Antigravity, or Codex in the repo and run: /spec <your idea>"""
 
 
-def create_labels(target: Path, *, dry: bool = False, human_review: bool = False) -> list[str]:
-    """Create the standard agency labels on GitHub via agent-gh (or gh fallback)."""
-    labels = [*AGENCY_LABELS, HUMAN_REVIEW_LABEL] if human_review else list(AGENCY_LABELS)
-    if dry:
-        return [name for name, _, _ in labels]
-    gh_bin = shutil.which("agent-gh") or shutil.which("gh")
-    if gh_bin is None:
-        raise RuntimeError("neither agent-gh nor gh was found on PATH")
-    created: list[str] = []
-    for name, color, desc in labels:
-        cmd = [gh_bin, "label", "create", name, "--color", color, "--description", desc, "--force"]
-        proc = subprocess.run(cmd, cwd=target, capture_output=True, text=True, timeout=30, check=False)
-        if proc.returncode != 0:
-            err = (proc.stderr.strip() or proc.stdout.strip() or "failed").splitlines()[-1]
-            raise RuntimeError(f"{gh_bin} label create {name}: {err}")
-        created.append(name)
-    return created
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=(__doc__ or "").strip().splitlines()[0])
     p.add_argument("target", type=Path)
     p.add_argument("--force", action="store_true", help="overwrite harness files that differ")
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--owner", help="GitHub @user or @org/team for .github/CODEOWNERS")
+    p.add_argument("--owner", help="GitHub @user or @org/team (auto-detected from origin if omitted)")
     p.add_argument(
         "--vendors",
         default="all",
         help="all, or comma-separated subset of claude,antigravity,codex (default: all)",
     )
+    p.add_argument("--offline", action="store_true", help="skip all GitHub label, ruleset, and App checks")
+    p.add_argument("--no-labels", action="store_true", help="skip creating GitHub labels")
+    p.add_argument("--no-ruleset", action="store_true", help="skip reconciling the default-branch ruleset")
+    p.add_argument("--human-review", action="store_true", help="force human-review policy (1 approval)")
     p.add_argument(
-        "--create-labels",
+        "--ship",
         action="store_true",
-        help="create standard GitHub issue/PR labels via agent-gh (or gh)",
-    )
-    p.add_argument(
-        "--human-review",
-        action="store_true",
-        help="with --create-labels: also create the needs-human-review label",
+        help="commit, push, and open (or merge) the install PR via agent-git/agent-gh",
     )
     a = p.parse_args(argv)
     vendors = parse_vendors(a.vendors)
     target = a.target.resolve()
+    slug = None if a.offline else detect_github_repo(target)
+    owner = a.owner or (f"@{slug.split('/', 1)[0]}" if slug else None)
+    cfg = {} if a.offline else load_agent_git_config()
+    policy = detect_repo_policy(slug, cfg, a.human_review)
+
     try:
-        res = install(target, a.force, a.dry_run, a.owner, vendors)
+        res = install(target, a.force, a.dry_run, owner, vendors)
     except UnsafePath as exc:
         print(f"refusing to install: {exc}", file=sys.stderr)
         return 1
@@ -299,16 +505,45 @@ def main(argv: list[str] | None = None) -> int:
         print(f"skipped: {f}")
     for n in res.notes:
         print(f"NOTE: {n}")
-    if a.create_labels:
+
+    labels_done = False
+    ruleset_done = False
+    if slug and not a.offline:
+        print(f"repo: {slug} (policy: {policy})")
+        if not a.dry_run:
+            ok, msg = check_agent_app_access(target, slug, cfg)
+            print(f"{'ok' if ok else 'NOTE'}: {msg}")
+        if not a.no_labels:
+            try:
+                labels = create_labels(target, dry=a.dry_run, human_review=(policy == "human-review"))
+            except RuntimeError as exc:
+                print(f"NOTE: label setup skipped ({exc})", file=sys.stderr)
+            else:
+                lbl_prefix = "would create label" if a.dry_run else "created label"
+                for name in labels:
+                    print(f"{lbl_prefix}: {name}")
+                labels_done = True
+        if not a.no_ruleset:
+            try:
+                rs_msg = ensure_ruleset(slug, policy, dry=a.dry_run)
+            except RuntimeError as exc:
+                print(f"NOTE: ruleset setup skipped ({exc})", file=sys.stderr)
+            else:
+                print(rs_msg)
+                ruleset_done = True
+
+    if a.ship:
         try:
-            labels = create_labels(target, dry=a.dry_run, human_review=a.human_review)
+            print(ship_install_pr(target, policy, dry=a.dry_run))
         except RuntimeError as exc:
-            print(f"label setup failed: {exc}", file=sys.stderr)
+            print(f"ship failed: {exc}", file=sys.stderr)
             return 1
-        lbl_prefix = "would create label" if a.dry_run else "created label"
-        for name in labels:
-            print(f"{lbl_prefix}: {name}")
-    print(NEXT_STEPS.format(ruleset=HARNESS / "templates" / "ruleset.json"))
+
+    if not labels_done and not ruleset_done:
+        print(NEXT_STEPS.format(ruleset=HARNESS / "templates" / "ruleset.json"))
+    else:
+        print("Ready! Start Claude Code, Antigravity, or Codex in the repo and run: /spec <your idea>")
+        print("Monitor: agency-dash up --vendor claude   # or --vendor codex")
     return 2 if res.unmerged else 0
 
 
