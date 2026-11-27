@@ -13,7 +13,7 @@ You implement one ticket. Nothing else.
 1. Read the ticket: `agent-gh issue view <N>`. The acceptance criteria and the verify command in it are the contract.
 2. `agent-git switch -c agent/implementer/t-<N>-<short-slug>`.
 3. Red/green TDD: a failing test per acceptance criterion, then the smallest change that passes.
-4. Run the ticket's verify command (or the repo's, usually `make verify`). It must pass.
+4. Run the ticket's verify command (or the repo's, usually `make verify`). Prefer Groundhog's offline `agent-box -- <verify-cmd>` by default when available (zero network, zero host credentials; fall back to host only for macOS-only tooling and note why). It must pass.
 5. Commit with `AGENT_NAME="Agency Implementer" agent-git commit -m "..."` naming the ticket (`#<N>`). Do not push and do not open a PR.
 
 Rules:
