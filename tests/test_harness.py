@@ -129,7 +129,7 @@ def test_reviewer_and_scout_cannot_edit() -> None:
 
 @pytest.mark.parametrize("name", ["spec", "next", "handoff"])
 def test_skill_frontmatter(name: str) -> None:
-    fm = frontmatter(HARNESS / ".claude" / "skills" / name / "SKILL.md")
+    fm = frontmatter(HARNESS / "core" / "skills" / name / "SKILL.md")
     assert fm["name"] == name and fm["description"]
 
 
@@ -143,18 +143,20 @@ def _labels_in(text: str) -> set[str]:
 
 def test_every_label_used_is_created_by_the_installer() -> None:
     used: set[str] = set()
-    for f in [*(HARNESS / ".claude" / "skills").rglob("SKILL.md"), HARNESS / ".claude" / "groupthinq.md"]:
+    for f in [*(HARNESS / "core" / "skills").rglob("SKILL.md"), HARNESS / "core" / "orchestrator.md"]:
         used |= _labels_in(f.read_text())
-    created = set(__import__("re").findall(r"gh label create (\S+)", installer.NEXT_STEPS))
-    assert {"ready-for-agent", "in-progress", "needs-human"} <= used
+    used.discard("needs-human-review")  # created only on human-review repos
+    created = set(__import__("re").findall(r"(?:agent-)?gh label create (\S+)", installer.NEXT_STEPS))
+    assert {"ready-for-agent", "in-progress", "needs-human", "agent-authored"} <= used
     assert used <= created, used - created
 
 
-def test_next_claims_tickets_and_only_works_own_issues() -> None:
-    text = (HARNESS / ".claude" / "skills" / "next" / "SKILL.md").read_text()
-    assert "--author @me" in text
+def test_next_claims_tickets_and_uses_agent_git_tools() -> None:
+    text = (HARNESS / "core" / "skills" / "next" / "SKILL.md").read_text()
+    assert "--author <owner>" in text
+    assert "agent-gh" in text and "agent-git" in text
     assert "--remove-label ready-for-agent --add-label in-progress" in text
-    assert "ready-for-agent,needs-human" not in (HARNESS / ".claude" / "groupthinq.md").read_text()
+    assert "ready-for-agent,needs-human" not in (HARNESS / "core" / "orchestrator.md").read_text()
 
 
 def test_no_personal_names_in_harness() -> None:
@@ -226,25 +228,41 @@ def test_install_fresh_repo(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     installer.install(repo)
     for rel in [
+        ".agents/orchestrator.md",
+        ".agents/roles/implementer.md",
+        ".agents/skills/next/SKILL.md",
         ".claude/agents/implementer.md",
         ".claude/skills/next/SKILL.md",
+        ".claude/groundhog-agency.md",
         ".claude/hooks/gtq.py",
         ".claude/settings.json",
         ".github/ISSUE_TEMPLATE/ticket.md",
         "STATUS.md",
     ]:
         assert (repo / rel).exists(), rel
+    assert installer.MARKER in (repo / "AGENTS.md").read_text()
     assert installer.MARKER in (repo / "CLAUDE.md").read_text()
     assert ".agency/" in (repo / ".gitignore").read_text().splitlines()
+
+
+def test_install_vendor_subset(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    installer.install(repo, vendors=("antigravity", "codex"))
+    assert (repo / ".agents" / "skills" / "next" / "SKILL.md").exists()
+    assert (repo / "AGENTS.md").exists()
+    assert not (repo / ".claude").exists()
+    assert not (repo / "CLAUDE.md").exists()
 
 
 def test_install_is_idempotent(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     installer.install(repo)
     claude_md = (repo / "CLAUDE.md").read_text()
+    agents_md = (repo / "AGENTS.md").read_text()
     res = installer.install(repo)
     assert res.written == [] and res.skipped == []
     assert (repo / "CLAUDE.md").read_text() == claude_md
+    assert (repo / "AGENTS.md").read_text() == agents_md
 
 
 def test_install_never_overwrites_existing_settings(tmp_path: Path) -> None:
@@ -254,7 +272,7 @@ def test_install_never_overwrites_existing_settings(tmp_path: Path) -> None:
     (repo / "CLAUDE.md").write_text("# My rules\n")
     res = installer.install(repo)
     assert json.loads((repo / ".claude" / "settings.json").read_text()) == {"mine": True}
-    assert (repo / ".claude" / "settings.groupthinq.json").exists()
+    assert (repo / ".claude" / "settings.groundhog-agency.json").exists()
     assert res.unmerged and "PROTECTIONS OFF" in res.notes[0]
     assert (repo / "CLAUDE.md").read_text().startswith("# My rules")
     installer.install(repo, force=True)

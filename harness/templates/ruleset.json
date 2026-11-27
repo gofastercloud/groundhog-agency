@@ -1,5 +1,5 @@
 {
-  "name": "groupthinQ default branch",
+  "name": "groundhog-agency default branch",
   "target": "branch",
   "enforcement": "active",
   "bypass_actors": [],
@@ -17,6 +17,9 @@
     },
     {
       "type": "non_fast_forward"
+    },
+    {
+      "type": "required_signatures"
     },
     {
       "type": "pull_request",
