@@ -372,6 +372,7 @@ def link_user_skills(*, dry: bool = False) -> list[str]:
     skill_dirs = (
         Path.home() / ".claude" / "skills",
         Path.home() / ".gemini" / "antigravity" / "skills",
+        Path.home() / ".gemini" / "config" / "skills",
         Path.home() / ".codex" / "skills",
     )
     linked: list[str] = []
