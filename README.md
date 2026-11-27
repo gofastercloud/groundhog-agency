@@ -22,15 +22,21 @@ All runtime and dev dependencies (`python3`, `uv`, `ruff`, `pyright`, `gh`, `tmu
 ## Install into a target repo
 
 ```nu
-agency-install /path/to/your/repo --owner @you --create-labels --dry-run
-agency-install /path/to/your/repo --owner @you --create-labels
-# Add --human-review for human-gated repos (also creates needs-human-review):
-agency-install /path/to/your/repo --owner @you --create-labels --human-review
-# Or restrict to specific AI vendors:
-agency-install /path/to/your/repo --owner @you --vendors claude,antigravity,codex
+# Full setup (files, CODEOWNERS, GitHub labels, signed-commit branch ruleset, App check):
+agency-install /path/to/your/repo --dry-run
+agency-install /path/to/your/repo
+
+# Same, and commit + open/merge the setup PR via agent-git/agent-gh:
+agency-install /path/to/your/repo --ship
+
+# Offline / file-only install (no GitHub API calls):
+agency-install /path/to/your/repo --owner @you --offline
+
+# Restrict to specific AI vendors:
+agency-install /path/to/your/repo --vendors claude,antigravity,codex
 ```
 
-`install.py` copies the shared `.agents/` core (skills, canonical roles, orchestrator rules), the `.claude/` adapter (hooks, subagents, cost/sandbox settings), `AGENTS.md` / `CLAUDE.md` compact workflow blocks, `.github/CODEOWNERS`, and `.github/ISSUE_TEMPLATE/ticket.md`. It never overwrites an existing `.claude/settings.json` (writes `settings.groundhog-agency.json` and exits `2` until merged) and refuses symlinks/hardlinks.
+`install.py` auto-detects `owner/repo` from `origin` and the repo's policy (`autonomous` vs `human-review`) from `~/.config/groundhog/agent-git.json`, writes the shared `.agents/` core and `.claude/` adapter, creates all standard labels, and reconciles the `main` branch ruleset (`required_signatures`, PR required, no force-push/deletion, plus 1 approval + CODEOWNERS review on `human-review` repos). It never overwrites an existing `.claude/settings.json` (writes `settings.groundhog-agency.json` and exits `2` until merged) and refuses symlinks/hardlinks.
 
 ## Architecture
 

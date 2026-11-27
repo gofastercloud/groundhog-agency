@@ -404,3 +404,43 @@ def test_create_labels_prefers_agent_gh(tmp_path: Path, monkeypatch: pytest.Monk
     created = installer.create_labels(tmp_path)
     assert len(created) == 5
     assert all(c[0] == "/usr/local/bin/agent-gh" and "--force" in c for c in calls)
+
+
+def test_parse_github_url_and_policy() -> None:
+    assert installer.parse_github_url("git@github.com:org/repo.git") == "org/repo"
+    assert installer.parse_github_url("https://github.com/org/repo.git") == "org/repo"
+    assert installer.parse_github_url("https://example.com/org/repo") is None
+    cfg = {"repo_policies": {"org/Strict": "human-review"}}
+    assert installer.detect_repo_policy("org/strict", cfg) == "human-review"
+    assert installer.detect_repo_policy("org/other", cfg) == "autonomous"
+    assert installer.detect_repo_policy("org/other", cfg, human_review=True) == "human-review"
+
+
+def test_ruleset_payload_autonomous_vs_human_review() -> None:
+    auto = installer.ruleset_payload("autonomous")
+    hr = installer.ruleset_payload("human-review")
+    assert auto["name"] == "main-autonomous" and hr["name"] == "main-human-review"
+    for payload, expected_approvals, expected_co in ((auto, 0, False), (hr, 1, True)):
+        rules = {r["type"]: r for r in payload["rules"]}  # type: ignore[index]
+        assert {"deletion", "non_fast_forward", "required_signatures", "pull_request"} <= set(rules)
+        params = rules["pull_request"]["parameters"]
+        assert params["required_approving_review_count"] == expected_approvals
+        assert params["require_code_owner_review"] is expected_co
+
+
+def test_ensure_ruleset_creates_and_updates_idempotently(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd == ["/usr/bin/gh", "api", "repos/org/r/rulesets"]:
+            body = json.dumps([{"id": 42, "name": "main-autonomous"}]) if len(calls) > 2 else "[]"
+            return subprocess.CompletedProcess(cmd, 0, body, "")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"id": 42}), "")
+
+    monkeypatch.setattr(installer.shutil, "which", lambda n: "/usr/bin/gh" if n == "gh" else None)
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    assert "created ruleset main-autonomous (#42)" in installer.ensure_ruleset("org/r", "autonomous")
+    assert "updated ruleset main-human-review (#42)" in installer.ensure_ruleset("org/r", "human-review")
+    assert calls[1][3:5] == ["POST", "repos/org/r/rulesets"]
+    assert calls[3][3:5] == ["PUT", "repos/org/r/rulesets/42"]
