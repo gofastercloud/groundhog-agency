@@ -127,7 +127,7 @@ def test_reviewer_and_scout_cannot_edit() -> None:
         assert "Edit" not in tools and "Write" not in tools
 
 
-@pytest.mark.parametrize("name", ["spec", "next", "next-all", "handoff"])
+@pytest.mark.parametrize("name", ["spec", "next", "next-all", "retro", "handoff"])
 def test_skill_frontmatter(name: str) -> None:
     fm = frontmatter(HARNESS / "core" / "skills" / name / "SKILL.md")
     assert fm["name"] == name and fm["description"]
@@ -232,9 +232,13 @@ def test_install_fresh_repo(tmp_path: Path) -> None:
         ".agents/roles/implementer.md",
         ".agents/skills/next/SKILL.md",
         ".agents/skills/next-all/SKILL.md",
+        ".agents/skills/retro/SKILL.md",
+        ".agents/kb.py",
         ".claude/agents/implementer.md",
         ".claude/skills/next/SKILL.md",
         ".claude/skills/next-all/SKILL.md",
+        ".claude/skills/retro/SKILL.md",
+        ".claude/hooks/kb.py",
         ".claude/groundhog-agency.md",
         ".claude/hooks/gtq.py",
         ".claude/settings.json",
@@ -446,3 +450,65 @@ def test_ensure_ruleset_creates_and_updates_idempotently(monkeypatch: pytest.Mon
     assert "updated ruleset main-human-review (#42)" in installer.ensure_ruleset("org/r", "human-review")
     assert calls[1][3:5] == ["POST", "repos/org/r/rulesets"]
     assert calls[3][3:5] == ["PUT", "repos/org/r/rulesets/42"]
+
+
+def test_check_readiness_detects_makefile_and_missing_verify(tmp_path: Path) -> None:
+    empty = make_repo(tmp_path / "empty")
+    checks = dict(installer.check_readiness(empty))
+    assert "warn" in checks
+
+    ready = make_repo(tmp_path / "ready")
+    (ready / "Makefile").write_text("verify:\n\tpytest\n")
+    (ready / ".worktreeinclude").write_text(".env.example\n")
+    r_checks = installer.check_readiness(ready)
+    assert any(lvl == "ok" and "Makefile" in msg for lvl, msg in r_checks)
+    assert any(lvl == "ok" and ".worktreeinclude" in msg for lvl, msg in r_checks)
+
+
+def test_ship_skips_when_settings_unmerged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = make_repo(tmp_path)
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "settings.json").write_text('{"mine": true}')
+    called = False
+
+    def boom(*_: object, **__: object) -> str:
+        nonlocal called
+        called = True
+        return ""
+
+    monkeypatch.setattr(installer, "ship_install_pr", boom)
+    rc = installer.main([str(repo), "--offline", "--ship"])
+    assert rc == 2
+    assert not called
+    assert "skipping --ship" in capsys.readouterr().err
+
+
+def test_ship_install_pr_surfaces_full_hook_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = make_repo(tmp_path)
+
+    def fake_which(name: str) -> str | None:
+        return f"/usr/bin/{name}" if name in {"git", "gh"} else None
+
+    def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if cmd[1] == "status":
+            return subprocess.CompletedProcess(cmd, 0, "A  AGENTS.md\n", "")
+        if cmd[1] == "commit":
+            return subprocess.CompletedProcess(
+                cmd,
+                2,
+                "eslint: AGENTS.md formatting error\n",
+                "husky - pre-commit script failed (code 2)\n",
+            )
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(installer.shutil, "which", fake_which)
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as exc_info:
+        installer.ship_install_pr(repo, "human-review")
+    msg = str(exc_info.value)
+    assert "eslint: AGENTS.md formatting error" in msg
+    assert "husky - pre-commit script failed (code 2)" in msg

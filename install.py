@@ -65,7 +65,9 @@ AGENTS_FILES: list[tuple[str, str]] = [
     ("core/skills/spec/SKILL.md", ".agents/skills/spec/SKILL.md"),
     ("core/skills/next/SKILL.md", ".agents/skills/next/SKILL.md"),
     ("core/skills/next-all/SKILL.md", ".agents/skills/next-all/SKILL.md"),
+    ("core/skills/retro/SKILL.md", ".agents/skills/retro/SKILL.md"),
     ("core/skills/handoff/SKILL.md", ".agents/skills/handoff/SKILL.md"),
+    (".claude/hooks/kb.py", ".agents/kb.py"),
 ]
 
 # Claude Code adapter files (.claude/).
@@ -76,9 +78,11 @@ CLAUDE_FILES: list[tuple[str, str]] = [
     ("core/skills/spec/SKILL.md", ".claude/skills/spec/SKILL.md"),
     ("core/skills/next/SKILL.md", ".claude/skills/next/SKILL.md"),
     ("core/skills/next-all/SKILL.md", ".claude/skills/next-all/SKILL.md"),
+    ("core/skills/retro/SKILL.md", ".claude/skills/retro/SKILL.md"),
     ("core/skills/handoff/SKILL.md", ".claude/skills/handoff/SKILL.md"),
     (".claude/hooks/gtq.py", ".claude/hooks/gtq.py"),
     (".claude/hooks/dash.py", ".claude/hooks/dash.py"),
+    (".claude/hooks/kb.py", ".claude/hooks/kb.py"),
     ("core/orchestrator.md", ".claude/groundhog-agency.md"),
 ]
 
@@ -327,34 +331,97 @@ def ensure_ruleset(slug: str, policy: str, *, dry: bool = False) -> str:
     return f"{verb} ruleset {name} (#{rid}) on {slug}"
 
 
+def check_readiness(target: Path) -> list[tuple[str, str]]:
+    """Agent-Readiness pre-flight check on the target repository."""
+    checks: list[tuple[str, str]] = []
+    has_verify = False
+    makefile = target / "Makefile"
+    if makefile.is_file() and re.search(
+        r"^(?:verify|test|check):", makefile.read_text(errors="replace"), re.M
+    ):
+        has_verify = True
+        checks.append(("ok", "Makefile verify/test target found"))
+    elif (target / "pyproject.toml").is_file() or (target / "package.json").is_file():
+        has_verify = True
+        checks.append(
+            ("ok", "Project manifest found (ensure a fast verify command is documented in AGENTS.md)")
+        )
+    if not has_verify:
+        checks.append(("warn", "No Makefile/pyproject.toml/package.json found — add a fast verify command"))
+
+    if (target / ".worktreeinclude").is_file():
+        checks.append(("ok", ".worktreeinclude present"))
+    else:
+        checks.append(("info", "No .worktreeinclude (add one if worktrees need untracked local files)"))
+
+    if shutil.which("agent-git") and shutil.which("agent-gh"):
+        checks.append(("ok", "Groundhog agent-git/agent-gh detected (scoped GitHub App mode)"))
+    elif shutil.which("gh"):
+        checks.append(("info", "Standalone mode (using git/gh; draft PRs recommended with personal login)"))
+    else:
+        checks.append(("warn", "Neither agent-gh nor gh found on PATH"))
+
+    if shutil.which("agent-box"):
+        checks.append(("ok", "Groundhog agent-box detected (offline container verification)"))
+    return checks
+
+
+def link_user_skills(*, dry: bool = False) -> list[str]:
+    """Symlink canonical agency skills into Claude Code, Antigravity, and Codex (standalone helper)."""
+    skill_names = ("spec", "next", "next-all", "retro", "handoff")
+    skill_dirs = (
+        Path.home() / ".claude" / "skills",
+        Path.home() / ".gemini" / "antigravity" / "skills",
+        Path.home() / ".codex" / "skills",
+    )
+    linked: list[str] = []
+    for base in skill_dirs:
+        if not dry:
+            base.mkdir(parents=True, exist_ok=True)
+        for name in skill_names:
+            src = HARNESS / "core" / "skills" / name
+            dst = base / f"agency-{name}"
+            if not dry:
+                if dst.is_symlink() or dst.exists():
+                    dst.unlink()
+                dst.symlink_to(src)
+            linked.append(str(dst))
+    return linked
+
+
 def ship_install_pr(target: Path, policy: str, *, dry: bool = False) -> str:
-    """Commit, push, open PR (and squash-merge on autonomous repos) via agent-git/agent-gh."""
+    """Commit, push, open PR (and squash-merge on autonomous repos) via agent-git/agent-gh or git/gh."""
     branch = "agent/setup/groundhog-agency"
+    git_bin = shutil.which("agent-git") or shutil.which("git")
+    gh_bin = shutil.which("agent-gh") or shutil.which("gh")
+    using_agent_broker = bool(shutil.which("agent-git") and shutil.which("agent-gh"))
+    effective_policy = policy if using_agent_broker else "human-review"
     if dry:
-        action = "open draft PR" if policy == "human-review" else "open and squash-merge PR"
+        action = "open draft PR" if effective_policy == "human-review" else "open and squash-merge PR"
         return f"would commit on {branch} and {action}"
-    agent_git = shutil.which("agent-git")
-    agent_gh = shutil.which("agent-gh")
-    if not agent_git or not agent_gh:
-        raise RuntimeError("--ship requires agent-git and agent-gh on PATH")
+    if not git_bin or not gh_bin:
+        raise RuntimeError("--ship requires git and gh (or agent-git and agent-gh) on PATH")
     env = os.environ | {"AGENT_NAME": "Groundhog Agency Installer"}
 
     def _step(cmd: list[str]) -> str:
         proc = subprocess.run(cmd, cwd=target, env=env, capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
-            err = (proc.stderr.strip() or proc.stdout.strip() or "failed").splitlines()[-1]
-            raise RuntimeError(f"{' '.join(cmd[:3])}: {err}")
+            chunks = [s.strip() for s in (proc.stdout, proc.stderr) if s.strip()]
+            lines = "\n".join(chunks).splitlines()
+            detail = "\n".join(lines[-20:]) if lines else "failed"
+            prefix = f"{' '.join(cmd[:3])}: "
+            raise RuntimeError(f"{prefix}\n{detail}" if "\n" in detail else f"{prefix}{detail}")
         return proc.stdout.strip()
 
-    _step([agent_git, "switch", "-C", branch])
-    _step([agent_git, "add", "-A"])
-    status = _step([agent_git, "status", "--porcelain"])
+    _step([git_bin, "switch", "-C", branch])
+    _step([git_bin, "add", "-A"])
+    status = _step([git_bin, "status", "--porcelain"])
     if not status:
         return "nothing new to commit"
-    _step([agent_git, "commit", "-m", "chore: install groundhog-agency harness"])
-    _step([agent_git, "push", "-u", "origin", branch])
+    _step([git_bin, "commit", "-m", "chore: install groundhog-agency harness"])
+    _step([git_bin, "push", "-u", "origin", branch])
     pr_cmd = [
-        agent_gh,
+        gh_bin,
         "pr",
         "create",
         "--label",
@@ -364,14 +431,16 @@ def ship_install_pr(target: Path, policy: str, *, dry: bool = False) -> str:
         "--body",
         "Installs the vendor-agnostic groundhog-agency harness (.agents/, .claude/, AGENTS.md, CODEOWNERS).",
     ]
-    if policy == "human-review":
-        pr_cmd += ["--draft", "--label", "needs-human-review"]
+    if effective_policy == "human-review":
+        pr_cmd += ["--draft"]
+        if policy == "human-review":
+            pr_cmd += ["--label", "needs-human-review"]
     pr_url = _step(pr_cmd)
-    if policy == "human-review":
+    if effective_policy == "human-review":
         return f"opened draft PR for human review: {pr_url}"
-    _step([agent_gh, "pr", "merge", "--squash", "--delete-branch"])
-    _step([agent_git, "switch", "main"])
-    _step([agent_git, "pull", "--ff-only", "--prune"])
+    _step([gh_bin, "pr", "merge", "--squash", "--delete-branch"])
+    _step([git_bin, "switch", "main"])
+    _step([git_bin, "pull", "--ff-only", "--prune"])
     return f"merged harness PR: {pr_url}"
 
 
@@ -469,7 +538,7 @@ Then start Claude Code, Antigravity, or Codex in the repo and run: /spec <your i
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=(__doc__ or "").strip().splitlines()[0])
-    p.add_argument("target", type=Path)
+    p.add_argument("target", type=Path, nargs="?", help="Target git repository path")
     p.add_argument("--force", action="store_true", help="overwrite harness files that differ")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--owner", help="GitHub @user or @org/team (auto-detected from origin if omitted)")
@@ -483,11 +552,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-ruleset", action="store_true", help="skip reconciling the default-branch ruleset")
     p.add_argument("--human-review", action="store_true", help="force human-review policy (1 approval)")
     p.add_argument(
+        "--link-skills",
+        action="store_true",
+        help="symlink agency skills into ~/.claude, ~/.gemini/antigravity, and ~/.codex (standalone)",
+    )
+    p.add_argument(
         "--ship",
         action="store_true",
-        help="commit, push, and open (or merge) the install PR via agent-git/agent-gh",
+        help="commit, push, and open (or merge) the install PR via agent-git/agent-gh or git/gh",
     )
     a = p.parse_args(argv)
+    if a.link_skills:
+        links = link_user_skills(dry=a.dry_run)
+        lbl = "would link skill" if a.dry_run else "linked skill"
+        for link in links:
+            print(f"{lbl}: {link}")
+        if a.target is None:
+            return 0
+    if a.target is None:
+        p.error("target repository path is required (unless using --link-skills alone)")
     vendors = parse_vendors(a.vendors)
     target = a.target.resolve()
     slug = None if a.offline else detect_github_repo(target)
@@ -507,6 +590,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"skipped: {f}")
     for n in res.notes:
         print(f"NOTE: {n}")
+
+    print("Readiness pre-flight:")
+    for level, msg in check_readiness(target):
+        print(f"  [{level}] {msg}")
 
     labels_done = False
     ruleset_done = False
@@ -535,6 +622,14 @@ def main(argv: list[str] | None = None) -> int:
                 ruleset_done = True
 
     if a.ship:
+        if res.unmerged:
+            print(
+                "NOTE: skipping --ship because .claude/settings.groundhog-agency.json is unmerged. "
+                "Merge it into .claude/settings.json, delete .claude/settings.groundhog-agency.json, "
+                "then re-run with --ship.",
+                file=sys.stderr,
+            )
+            return 2
         try:
             print(ship_install_pr(target, policy, dry=a.dry_run))
         except RuntimeError as exc:
