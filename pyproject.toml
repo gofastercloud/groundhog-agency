@@ -9,7 +9,7 @@ dependencies = []  # the harness itself is stdlib-only
 
 [dependency-groups]
 dev = [
-  "pytest==8.4.2",
+  "pytest==9.0.3",
   "ruff==0.14.4",
 ]
 # pyright is used from the system install (brew/npm); the PyPI wrapper downloads it at runtime.
