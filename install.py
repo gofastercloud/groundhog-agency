@@ -64,6 +64,7 @@ AGENTS_FILES: list[tuple[str, str]] = [
     ("core/roles/scout.md", ".agents/roles/scout.md"),
     ("core/skills/spec/SKILL.md", ".agents/skills/spec/SKILL.md"),
     ("core/skills/next/SKILL.md", ".agents/skills/next/SKILL.md"),
+    ("core/skills/next-all/SKILL.md", ".agents/skills/next-all/SKILL.md"),
     ("core/skills/handoff/SKILL.md", ".agents/skills/handoff/SKILL.md"),
 ]
 
@@ -74,6 +75,7 @@ CLAUDE_FILES: list[tuple[str, str]] = [
     (".claude/agents/scout.md", ".claude/agents/scout.md"),
     ("core/skills/spec/SKILL.md", ".claude/skills/spec/SKILL.md"),
     ("core/skills/next/SKILL.md", ".claude/skills/next/SKILL.md"),
+    ("core/skills/next-all/SKILL.md", ".claude/skills/next-all/SKILL.md"),
     ("core/skills/handoff/SKILL.md", ".claude/skills/handoff/SKILL.md"),
     (".claude/hooks/gtq.py", ".claude/hooks/gtq.py"),
     (".claude/hooks/dash.py", ".claude/hooks/dash.py"),
