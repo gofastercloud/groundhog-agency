@@ -15,6 +15,6 @@ Rewrite `STATUS.md` (at most 40 lines; replace stale content, don't append) with
 ```
 
 Then:
-1. Make sure every decision that matters is in an issue, PR or ADR, not only in this conversation.
-2. Run `python3 .claude/hooks/gtq.py report --days 1 --by agent_type` and add the total to the Goal line as `(spend today: $X)`.
-3. Tell the maintainer: "STATUS.md is current. Run /clear to start fresh." Don't keep working after the handoff.
+1. Make sure every decision that matters is in an issue, PR, or ADR, not only in this conversation.
+2. If `.claude/hooks/gtq.py` is present, run `python3 .claude/hooks/gtq.py report --days 1 --by agent_type` and add the total to the Goal line as `(spend today: $X)`.
+3. Tell the maintainer: "STATUS.md is current. Start a fresh session (`/clear` in Claude Code) to continue." Don't keep working after the handoff.

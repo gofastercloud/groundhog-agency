@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Install the groupthinQ harness into a git repository.
+"""Install the groundhog-agency harness into a git repository.
 
-    python3 install.py /path/to/repo [--owner @you] [--force] [--dry-run]
+    python3 install.py /path/to/repo [--owner @you] [--vendors all] [--force] [--dry-run]
 
-Copies agents, skills, hooks and templates. Existing files are never
-overwritten without --force. An existing .claude/settings.json is never
-touched, even with --force: the harness settings are written next to it and
-the installer exits 2, because until you merge them the permission rules,
-sandbox and subagent guard are off. Refuses to write through symlinks or
-outside the target. Runs no network or gh commands.
+Copies vendor-agnostic skills, roles, and templates, plus optional Claude Code
+hooks/settings. Existing files are never overwritten without --force. An
+existing .claude/settings.json is never touched, even with --force: the harness
+settings are written next to it and the installer exits 2, because until you
+merge them the permission rules, sandbox and subagent guard are off. Refuses to
+write through symlinks or outside the target. Runs no network or gh commands.
 """
 
 from __future__ import annotations
@@ -24,22 +24,42 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "harness"
-MARKER = "<!-- groupthinQ:start -->"
+MARKER = "<!-- groundhog-agency:start -->"
+LEGACY_MARKER = "<!-- groupthinQ:start -->"
 OWNER_RE = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:/[A-Za-z0-9._-]+)?")
+ALL_VENDORS = ("claude", "antigravity", "codex")
 
-# (source relative to harness/, destination relative to the target repo)
-FILES: list[tuple[str, str]] = [
+# Shared files always installed regardless of vendor.
+SHARED_FILES: list[tuple[str, str]] = [
+    ("templates/ticket.md", ".github/ISSUE_TEMPLATE/ticket.md"),
+]
+
+# Vendor-agnostic .agents/ layout (used by Antigravity, Codex, and as canonical reference).
+AGENTS_FILES: list[tuple[str, str]] = [
+    ("core/orchestrator.md", ".agents/orchestrator.md"),
+    ("core/roles/implementer.md", ".agents/roles/implementer.md"),
+    ("core/roles/reviewer.md", ".agents/roles/reviewer.md"),
+    ("core/roles/scout.md", ".agents/roles/scout.md"),
+    ("core/skills/spec/SKILL.md", ".agents/skills/spec/SKILL.md"),
+    ("core/skills/next/SKILL.md", ".agents/skills/next/SKILL.md"),
+    ("core/skills/handoff/SKILL.md", ".agents/skills/handoff/SKILL.md"),
+]
+
+# Claude Code adapter files (.claude/).
+CLAUDE_FILES: list[tuple[str, str]] = [
     (".claude/agents/implementer.md", ".claude/agents/implementer.md"),
     (".claude/agents/reviewer.md", ".claude/agents/reviewer.md"),
     (".claude/agents/scout.md", ".claude/agents/scout.md"),
-    (".claude/skills/spec/SKILL.md", ".claude/skills/spec/SKILL.md"),
-    (".claude/skills/next/SKILL.md", ".claude/skills/next/SKILL.md"),
-    (".claude/skills/handoff/SKILL.md", ".claude/skills/handoff/SKILL.md"),
+    ("core/skills/spec/SKILL.md", ".claude/skills/spec/SKILL.md"),
+    ("core/skills/next/SKILL.md", ".claude/skills/next/SKILL.md"),
+    ("core/skills/handoff/SKILL.md", ".claude/skills/handoff/SKILL.md"),
     (".claude/hooks/gtq.py", ".claude/hooks/gtq.py"),
     (".claude/hooks/dash.py", ".claude/hooks/dash.py"),
-    (".claude/groupthinq.md", ".claude/groupthinq.md"),
-    ("templates/ticket.md", ".github/ISSUE_TEMPLATE/ticket.md"),
+    ("core/orchestrator.md", ".claude/groundhog-agency.md"),
 ]
+
+# Backwards-compatible aggregate list for callers/tests inspecting FILES.
+FILES: list[tuple[str, str]] = [*SHARED_FILES, *AGENTS_FILES, *CLAUDE_FILES]
 CREATE_IF_MISSING: list[tuple[str, str]] = [("templates/STATUS.md", "STATUS.md")]
 
 
@@ -94,43 +114,77 @@ def _copy(src: Path, dst: Path, rel: str, force: bool, dry: bool, res: Result, t
     res.written.append(rel)
 
 
-def install(target: Path, force: bool = False, dry: bool = False, owner: str | None = None) -> Result:
+def _append_block(target: Path, rel: str, template: str, label: str, dry: bool, res: Result) -> None:
+    dst = target / rel
+    _check_dest(target, dst)
+    block = (HARNESS / "templates" / template).read_text(encoding="utf-8")
+    existing = dst.read_text(encoding="utf-8") if dst.exists() else ""
+    if MARKER not in existing and LEGACY_MARKER not in existing:
+        if not dry:
+            text = existing.rstrip() + "\n" + block if existing else block.lstrip()
+            _write_atomic(dst, text.encode("utf-8"))
+        res.written.append(f"{rel} ({label})")
+
+
+def parse_vendors(raw: str | None) -> tuple[str, ...]:
+    if not raw or raw.strip().lower() == "all":
+        return ALL_VENDORS
+    chosen = tuple(dict.fromkeys(v.strip().lower() for v in raw.split(",") if v.strip()))
+    bad = [v for v in chosen if v not in ALL_VENDORS]
+    if bad or not chosen:
+        raise SystemExit(
+            f"--vendors must be 'all' or a comma-separated subset of {', '.join(ALL_VENDORS)}, not {raw!r}"
+        )
+    return chosen
+
+
+def install(
+    target: Path,
+    force: bool = False,
+    dry: bool = False,
+    owner: str | None = None,
+    vendors: tuple[str, ...] = ALL_VENDORS,
+) -> Result:
     if not (target / ".git").exists():
         raise SystemExit(f"{target} is not a git repository")
     if owner is not None and not OWNER_RE.fullmatch(owner):
         raise SystemExit(f"--owner must look like @user or @org/team, not {owner!r}")
     res = Result()
-    for src_rel, dst_rel in FILES:
+    want_claude = "claude" in vendors
+    want_agents = "antigravity" in vendors or "codex" in vendors
+
+    for src_rel, dst_rel in SHARED_FILES:
         _copy(HARNESS / src_rel, target / dst_rel, dst_rel, force, dry, res, target)
+    if want_agents:
+        for src_rel, dst_rel in AGENTS_FILES:
+            _copy(HARNESS / src_rel, target / dst_rel, dst_rel, force, dry, res, target)
+    if want_claude:
+        for src_rel, dst_rel in CLAUDE_FILES:
+            _copy(HARNESS / src_rel, target / dst_rel, dst_rel, force, dry, res, target)
     for src_rel, dst_rel in CREATE_IF_MISSING:
         _copy(HARNESS / src_rel, target / dst_rel, dst_rel, False, dry, res, target)
 
-    settings_src = HARNESS / ".claude" / "settings.json"
-    settings_dst = target / ".claude" / "settings.json"
-    if settings_dst.exists() and settings_dst.read_bytes() == settings_src.read_bytes():
-        pass  # already installed
-    elif settings_dst.exists():
-        side = ".claude/settings.groupthinq.json"
-        _copy(settings_src, target / side, side, True, dry, res, target)
-        res.unmerged = True
-        res.notes.append(
-            "PROTECTIONS OFF: your existing .claude/settings.json was left unchanged, so the "
-            "harness permission rules, sandbox, cost settings and hooks (including the subagent "
-            "guard) are not active. Merge .claude/settings.groupthinq.json into it by hand "
-            "(env, permissions, sandbox, hooks), then delete it and re-run the installer."
-        )
-    else:
-        _copy(settings_src, settings_dst, ".claude/settings.json", False, dry, res, target)
+    if want_claude:
+        settings_src = HARNESS / ".claude" / "settings.json"
+        settings_dst = target / ".claude" / "settings.json"
+        if settings_dst.exists() and settings_dst.read_bytes() == settings_src.read_bytes():
+            pass  # already installed
+        elif settings_dst.exists():
+            side = ".claude/settings.groundhog-agency.json"
+            _copy(settings_src, target / side, side, True, dry, res, target)
+            res.unmerged = True
+            res.notes.append(
+                "PROTECTIONS OFF: your existing .claude/settings.json was left unchanged, so the "
+                "harness permission rules, sandbox, cost settings and hooks (including the subagent "
+                "guard) are not active. Merge .claude/settings.groundhog-agency.json into it by hand "
+                "(env, permissions, sandbox, hooks), then delete it and re-run the installer."
+            )
+        else:
+            _copy(settings_src, settings_dst, ".claude/settings.json", False, dry, res, target)
 
-    claude_md = target / "CLAUDE.md"
-    _check_dest(target, claude_md)
-    block = (HARNESS / "templates" / "claude-block.md").read_text(encoding="utf-8")
-    existing = claude_md.read_text(encoding="utf-8") if claude_md.exists() else ""
-    if MARKER not in existing:
-        if not dry:
-            text = existing.rstrip() + "\n" + block if existing else block.lstrip()
-            _write_atomic(claude_md, text.encode("utf-8"))
-        res.written.append("CLAUDE.md (compact instructions block)")
+    _append_block(target, "AGENTS.md", "agents-block.md", "vendor-agnostic agency workflow", dry, res)
+    if want_claude:
+        _append_block(target, "CLAUDE.md", "claude-block.md", "compact instructions block", dry, res)
 
     codeowners = target / ".github" / "CODEOWNERS"
     _check_dest(target, codeowners)
@@ -140,7 +194,8 @@ def install(target: Path, force: bool = False, dry: bool = False, owner: str | N
         if "/.claude/" not in codeowners.read_text(encoding="utf-8"):
             res.notes.append(
                 "Existing .github/CODEOWNERS left unchanged: add the lines from "
-                "harness/templates/CODEOWNERS for .claude/, .github/workflows/ and CLAUDE.md."
+                "harness/templates/CODEOWNERS for .claude/, .agents/, .github/workflows/, "
+                "AGENTS.md and CLAUDE.md."
             )
     else:
         text = (HARNESS / "templates" / "CODEOWNERS").read_text(encoding="utf-8").format(owner=owner)
@@ -161,20 +216,18 @@ def install(target: Path, force: bool = False, dry: bool = False, owner: str | N
 
 NEXT_STEPS = """\
 Next steps (run these yourself; the installer makes no network calls):
-  gh label create ready-for-agent --color 5BD4F5 --description "Implementer may pick this up"
-  gh label create in-progress     --color FACC15 --description "Claimed by an implementer"
-  gh label create needs-human     --color FB923C --description "Waiting on the maintainer"
-  gh label create spec            --color 8B5CF6
-  # Implementer worktrees start without untracked files: list any they need
-  # (e.g. .env.example, local config) in .worktreeinclude.
-  # Protect the default branch: changes only via PR, no force-push, no deletion.
+  agent-gh label create agent-authored  --color 0E8A16 --description "Authored by an autonomous agent" --force
+  agent-gh label create ready-for-agent --color 5BD4F5 --description "Implementer may pick this up" --force
+  agent-gh label create in-progress     --color FACC15 --description "Claimed by an implementer" --force
+  agent-gh label create needs-human     --color FB923C --description "Waiting on the maintainer" --force
+  agent-gh label create spec            --color 8B5CF6 --description "Specification issue" --force
+  # Check Groundhog agent-git policy for this repo (autonomous vs human-review):
+  groundhog agent-git status
+  # Protect the default branch (PR required, signed commits, no force-push, no deletion):
   gh api -X POST 'repos/{{owner}}/{{repo}}/rulesets' --input '{ruleset}'
-  # Approvals are 0 because PRs are opened with your own login and GitHub won't let
-  # you approve your own PR. Raise to 1 (and require code-owner review) once a bot
-  # account or GitHub App opens the PRs.
-  # Use HTTPS git auth (gh auth setup-git): the sandbox blocks ~/.ssh.
-  # Monitor: python3 .claude/hooks/dash.py up   (tmux: Claude Code left, dashboard right)
-Then start Claude Code in the repo and run: /spec <your idea>"""
+  # Monitor (Claude Code or Codex):
+  python3 .claude/hooks/dash.py up --vendor claude   # or --vendor codex
+Then start Claude Code, Antigravity, or Codex in the repo and run: /spec <your idea>"""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -183,9 +236,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--force", action="store_true", help="overwrite harness files that differ")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--owner", help="GitHub @user or @org/team for .github/CODEOWNERS")
+    p.add_argument(
+        "--vendors",
+        default="all",
+        help="all, or comma-separated subset of claude,antigravity,codex (default: all)",
+    )
     a = p.parse_args(argv)
+    vendors = parse_vendors(a.vendors)
     try:
-        res = install(a.target.resolve(), a.force, a.dry_run, a.owner)
+        res = install(a.target.resolve(), a.force, a.dry_run, a.owner, vendors)
     except UnsafePath as exc:
         print(f"refusing to install: {exc}", file=sys.stderr)
         return 1

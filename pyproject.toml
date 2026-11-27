@@ -1,7 +1,7 @@
 [project]
-name = "groupthinq"
-version = "0.1.0"
-description = "A minimal, cost-aware software agency harness for Claude Code"
+name = "groundhog-agency"
+version = "0.2.0"
+description = "A vendor-agnostic, cost-aware autonomous software agency harness for Groundhog (Claude Code, Antigravity, Codex)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

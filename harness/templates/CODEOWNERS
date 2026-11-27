@@ -1,6 +1,8 @@
-# groupthinQ: the harness, CI and shared instructions need the maintainer's review.
+# groundhog-agency: the harness, CI and shared instructions need the maintainer's review.
 /.claude/ {owner}
+/.agents/ {owner}
 /.github/ {owner}
 /.mcp.json {owner}
+/AGENTS.md {owner}
 /CLAUDE.md {owner}
 /STATUS.md {owner}

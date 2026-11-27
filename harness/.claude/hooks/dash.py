@@ -105,9 +105,10 @@ def _run(cmd: list[str], cwd: Path) -> str:
 
 
 def tickets(project: Path) -> dict[str, list[tuple[int, str]] | str]:
+    gh_bin = shutil.which("agent-gh") or "gh"
     out: dict[str, list[tuple[int, str]] | str] = {}
     for label in LABELS:
-        cmd = ["gh", "issue", "list", "--state", "open", "--label", label, "--json", "number,title"]
+        cmd = [gh_bin, "issue", "list", "--state", "open", "--label", label, "--json", "number,title"]
         try:
             rows = json.loads(_run([*cmd, "--limit", "20"], project))
             out[label] = [(int(r["number"]), str(r["title"])) for r in rows]
@@ -256,7 +257,7 @@ def _k(n: int) -> str:
 
 def render(s: Snapshot, width: int = 100) -> list[str]:
     threshold = float(gtq._env_int("GTQ_USAGE_STOP_PERCENT", 90))
-    lines = [f"groupthinQ · {s.project.name} · {datetime.fromtimestamp(s.now):%H:%M:%S}"]
+    lines = [f"groundhog-agency · {s.project.name} · {datetime.fromtimestamp(s.now):%H:%M:%S}"]
     if s.pause is not None:
         lines.append(f"*** PAUSED: {s.pause.describe()} ***")
 
@@ -349,22 +350,32 @@ def claude_command(code_mode: bool) -> str | None:
     return "env CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude"
 
 
-def cmd_up(project: Path, code_mode: bool = False) -> int:
-    claude = claude_command(code_mode)
-    if claude is None:
+def vendor_command(vendor: str, code_mode: bool) -> str | None:
+    """The orchestrator pane's command for the chosen AI vendor."""
+    if vendor == "codex":
+        if code_mode:
+            print("--code-mode is only supported with --vendor claude.")
+            return None
+        return "codex"
+    return claude_command(code_mode)
+
+
+def cmd_up(project: Path, code_mode: bool = False, vendor: str = "claude") -> int:
+    agent_cmd = vendor_command(vendor, code_mode)
+    if agent_cmd is None:
         return 1
     dash = f"python3 {shlex.quote(str(HERE / 'dash.py'))} --project {shlex.quote(str(project))}"
     tmux = shutil.which("tmux")
     if tmux is None:
         print(
             "tmux not found (macOS: brew install tmux). Without it, run these in two terminals:\n"
-            f"  cd {shlex.quote(str(project))} && {claude}\n  {dash}"
+            f"  cd {shlex.quote(str(project))} && {agent_cmd}\n  {dash}"
         )
         return 1
     name = session_name(project)
     if subprocess.run([tmux, "has-session", "-t", name], capture_output=True, check=False).returncode:
         steps = [
-            [tmux, "new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", str(project), claude],
+            [tmux, "new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", str(project), agent_cmd],
             [tmux, "set-option", "-t", name, "remain-on-exit", "on"],  # keep a pane's last words
             [tmux, "split-window", "-h", "-l", "40%", "-t", name, "-c", str(project), dash],
             [tmux, "select-pane", "-t", name, "-L"],
@@ -385,12 +396,13 @@ def main(argv: list[str] | None = None) -> int:
         "--project", type=Path, default=Path(os.environ.get("CLAUDE_PROJECT_DIR") or HERE.parents[1])
     )
     p.add_argument("--once", action="store_true", help="print one snapshot and exit")
+    p.add_argument("--vendor", choices=["claude", "codex"], default="claude", help="with `up`: AI CLI vendor")
     p.add_argument("--code-mode", action="store_true", help="with `up`: start Claude Code in Code Mode")
     p.add_argument("--interval", type=float, default=5.0)
     a = p.parse_args(argv)
     project = a.project.resolve()
     if a.command == "up":
-        return cmd_up(project, a.code_mode)
+        return cmd_up(project, a.code_mode, a.vendor)
     if a.once:
         print("\n".join(render(collect(project, Cache()), shutil.get_terminal_size().columns)))
         return 0
