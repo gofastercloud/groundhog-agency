@@ -127,7 +127,7 @@ def test_reviewer_and_scout_cannot_edit() -> None:
         assert "Edit" not in tools and "Write" not in tools
 
 
-@pytest.mark.parametrize("name", ["spec", "next", "next-all", "retro", "handoff"])
+@pytest.mark.parametrize("name", ["spec", "next", "next-all", "full-auto", "retro", "handoff"])
 def test_skill_frontmatter(name: str) -> None:
     fm = frontmatter(HARNESS / "core" / "skills" / name / "SKILL.md")
     assert fm["name"] == name and fm["description"]
@@ -239,11 +239,13 @@ def test_install_fresh_repo(tmp_path: Path) -> None:
         ".agents/roles/implementer.md",
         ".agents/skills/next/SKILL.md",
         ".agents/skills/next-all/SKILL.md",
+        ".agents/skills/full-auto/SKILL.md",
         ".agents/skills/retro/SKILL.md",
         ".agents/kb.py",
         ".claude/agents/implementer.md",
         ".claude/skills/next/SKILL.md",
         ".claude/skills/next-all/SKILL.md",
+        ".claude/skills/full-auto/SKILL.md",
         ".claude/skills/retro/SKILL.md",
         ".claude/hooks/kb.py",
         ".claude/groundhog-agency.md",

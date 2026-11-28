@@ -65,6 +65,7 @@ AGENTS_FILES: list[tuple[str, str]] = [
     ("core/skills/spec/SKILL.md", ".agents/skills/spec/SKILL.md"),
     ("core/skills/next/SKILL.md", ".agents/skills/next/SKILL.md"),
     ("core/skills/next-all/SKILL.md", ".agents/skills/next-all/SKILL.md"),
+    ("core/skills/full-auto/SKILL.md", ".agents/skills/full-auto/SKILL.md"),
     ("core/skills/retro/SKILL.md", ".agents/skills/retro/SKILL.md"),
     ("core/skills/handoff/SKILL.md", ".agents/skills/handoff/SKILL.md"),
     (".claude/hooks/kb.py", ".agents/kb.py"),
@@ -78,6 +79,7 @@ CLAUDE_FILES: list[tuple[str, str]] = [
     ("core/skills/spec/SKILL.md", ".claude/skills/spec/SKILL.md"),
     ("core/skills/next/SKILL.md", ".claude/skills/next/SKILL.md"),
     ("core/skills/next-all/SKILL.md", ".claude/skills/next-all/SKILL.md"),
+    ("core/skills/full-auto/SKILL.md", ".claude/skills/full-auto/SKILL.md"),
     ("core/skills/retro/SKILL.md", ".claude/skills/retro/SKILL.md"),
     ("core/skills/handoff/SKILL.md", ".claude/skills/handoff/SKILL.md"),
     (".claude/hooks/gtq.py", ".claude/hooks/gtq.py"),
@@ -368,7 +370,7 @@ def check_readiness(target: Path) -> list[tuple[str, str]]:
 
 def link_user_skills(*, dry: bool = False) -> list[str]:
     """Symlink canonical agency skills into Claude Code, Antigravity, and Codex (standalone helper)."""
-    skill_names = ("spec", "next", "next-all", "retro", "handoff")
+    skill_names = ("spec", "next", "next-all", "full-auto", "retro", "handoff")
     skill_dirs = (
         Path.home() / ".claude" / "skills",
         Path.home() / ".gemini" / "antigravity" / "skills",

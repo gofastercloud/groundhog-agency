@@ -10,6 +10,7 @@ This workflow is **AI vendor-agnostic** (Claude Code, Antigravity, Codex) and wo
   - `/spec <idea>` consults the cross-project KB (`kb.py search`), grills, and turns an idea into a spec issue and vertical-slice tickets.
   - `/next` dispatches up to 3 disjoint tickets, runs fresh-context `reviewer` verification, logs verdicts (`gtq.py verdict`), and ships PRs according to repo policy (`autonomous` vs `human-review`).
   - `/next-all [max]` drains the backlog batch-by-batch until empty, blocked, or capped.
+  - `/full-auto <idea>` (opt-in, user-invoked only) one-shots spec → `ready-for-agent` tickets → `/next-all` → `/retro` while keeping all review and security rails intact.
   - `/retro` distils build learnings into `~/.agency-kb/` (`kb.py add`) and proposes `AGENTS.md` improvements.
   - `/handoff` closes the work block and refreshes `STATUS.md`.
   - Never push directly to `main` or `master`, and never force-push.

@@ -4,7 +4,7 @@
 
 This repository uses **groundhog-agency** with Groundhog's `agent-git` / `agent-gh` broker. Works identically in **Claude Code**, **Antigravity**, and **Codex**:
 
-- **Skills:** `/spec <idea>` (grill → spec + tickets), `/next [N]` (dispatch up to 3 tickets → `implementer` → fresh-context `reviewer` → ship PR), `/next-all [max]` (drain backlog batch-by-batch until blocked, human-review cap, or context limit), `/handoff` (update `STATUS.md` ≤40 lines → start fresh).
+- **Skills:** `/spec <idea>` (grill → spec + tickets), `/next [N]` (dispatch up to 3 tickets → `implementer` → fresh-context `reviewer` → ship PR), `/next-all [max]` (drain backlog batch-by-batch), `/full-auto <idea>` (opt-in one-shot: spec → ready tickets → `/next-all` → `/retro`), `/retro` (log learnings to `~/.agency-kb`), `/handoff` (update `STATUS.md` ≤40 lines → start fresh).
 - **Roles:** canonical contracts live in `.agents/roles/{implementer,reviewer,scout}.md` (and `.claude/agents/` for Claude Code).
   - **Claude Code:** uses `.claude/agents/*.md`, `.claude/hooks/gtq.py`, and `.claude/settings.json`.
   - **Antigravity:** delegates via `invoke_subagent` (`implementer` in `Workspace: "share"` or `.worktrees/t-<N>`, `reviewer` read-only in `.worktrees/review-t-<N>`, `scout` on `flash`/`flash_lite`).
