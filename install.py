@@ -514,10 +514,16 @@ def install(
     gitignore = target / ".gitignore"
     _check_dest(target, gitignore)
     lines = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.exists() else []
-    if not any(line.strip().strip("/") == ".agency" for line in lines):
+    existing = {line.strip().strip("/") for line in lines}
+    added_ignores: list[str] = []
+    for entry in (".agency/", ".worktrees/"):
+        if entry.strip("/") not in existing:
+            lines.append(entry)
+            added_ignores.append(entry)
+    if added_ignores:
         if not dry:
-            _write_atomic(gitignore, ("\n".join([*lines, ".agency/"]) + "\n").encode("utf-8"))
-        res.written.append(".gitignore (.agency/)")
+            _write_atomic(gitignore, ("\n".join(lines) + "\n").encode("utf-8"))
+        res.written.append(f".gitignore ({', '.join(added_ignores)})")
     return res
 
 

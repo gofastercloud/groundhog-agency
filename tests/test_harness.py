@@ -255,7 +255,9 @@ def test_install_fresh_repo(tmp_path: Path) -> None:
         assert (repo / rel).exists(), rel
     assert installer.MARKER in (repo / "AGENTS.md").read_text()
     assert installer.MARKER in (repo / "CLAUDE.md").read_text()
-    assert ".agency/" in (repo / ".gitignore").read_text().splitlines()
+    gitignore_lines = (repo / ".gitignore").read_text().splitlines()
+    assert ".agency/" in gitignore_lines
+    assert ".worktrees/" in gitignore_lines
 
 
 def test_install_vendor_subset(tmp_path: Path) -> None:
@@ -337,9 +339,14 @@ def test_settings_orchestrator_is_sonnet_with_opus_advisor() -> None:
 @pytest.mark.parametrize("line", [".agency", ".agency/", "/.agency", "/.agency/"])
 def test_install_recognises_existing_gitignore_entry(tmp_path: Path, line: str) -> None:
     repo = make_repo(tmp_path)
-    (repo / ".gitignore").write_text(f"node_modules/\n{line}\n")
+    (repo / ".gitignore").write_text(f"node_modules/\n{line}\n.worktrees/\n")
     installer.install(repo)
-    assert (repo / ".gitignore").read_text() == f"node_modules/\n{line}\n"
+    assert (repo / ".gitignore").read_text() == f"node_modules/\n{line}\n.worktrees/\n"
+
+
+def test_harness_prompts_avoid_inline_agent_name_prefixes() -> None:
+    for f in HARNESS.rglob("*.md"):
+        assert "AGENT_NAME=" not in f.read_text(encoding="utf-8"), f
 
 
 def test_install_refuses_symlinked_destination(tmp_path: Path) -> None:
