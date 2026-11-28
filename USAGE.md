@@ -40,6 +40,7 @@ With Groundhog installed, `agency-install` automatically uses `agent-git`/`agent
 | `/spec <idea>` | Consults `~/.agency-kb` for past patterns/pitfalls, grills you (≤10 Qs), creates a `spec` issue + small vertical-slice tickets (`S`/`M`, acceptance criteria, expected files, blockers). |
 | `/next [N]` | Claims up to `N` (default 2, max 3) unblocked, file-disjoint `ready-for-agent` tickets → spawns `implementer`s in isolated worktrees → fresh-context `reviewer` grades each diff → logs verdict → ships PR. |
 | `/next-all [max]` | Runs `/next` continuously batch-by-batch (default cap 10) until the backlog is drained, a blocker or human-review cap (3 draft PRs) is hit, or context/usage limits trigger. |
+| `/full-auto <idea>` | Opt-in one-shot mode (user-invoked only): consults KB + scouts repo, writes spec + `ready-for-agent` tickets without pausing, drains them with `/next-all`, and finishes with `/retro`. |
 | `/retro [scope]` | Reviews recent PRs and `.agency/verdicts.csv`, distils reusable patterns, library notes, and pitfalls into `~/.agency-kb/`, and suggests `AGENTS.md` updates. |
 | `/handoff` | Rewrites `STATUS.md` (≤40 lines), prints today's spend, and resets cleanly for a fresh session. |
 
